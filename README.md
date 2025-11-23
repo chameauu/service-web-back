@@ -6,7 +6,7 @@ A production-ready IoT backend platform built with Python Flask for device conne
 ![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-blue)
 ![Flask](https://img.shields.io/badge/Framework-Flask-lightgrey)
 ![Tests](https://img.shields.io/badge/tests-158%20passing-success)
-[![codecov](https://codecov.io/gh/YOUR_USERNAME/YOUR_REPO/branch/main/graph/badge.svg)](https://codecov.io/gh/YOUR_USERNAME/YOUR_REPO)
+[![codecov](https://codecov.io/gh/YOUR_USERNAME/YOUR_REPO/branch/main/graph/badge.svg)](https://app.codecov.io/github/chameauu/service-web-back/)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## ✨ Features
