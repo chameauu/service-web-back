@@ -224,6 +224,40 @@ class TestDeactivationVsDeletion:
         
         assert response.status_code == 404
 
+    def test_cannot_deactivate_admin_user(self, app, client):
+        """Test that admin users cannot be deactivated"""
+        admin_token = get_admin_token()
+        
+        # Create an admin user
+        with app.app_context():
+            admin_user = User(
+                username='adminuser',
+                email='admin@example.com',
+                password_hash='hash'
+            )
+            admin_user.is_admin = True
+            db.session.add(admin_user)
+            db.session.commit()
+            admin_user_id = admin_user.user_id
+        
+        # Try to deactivate the admin user
+        response = client.patch(
+            f'/api/v1/users/{admin_user_id}/deactivate',
+            headers={'Authorization': f'admin {admin_token}'}
+        )
+        
+        assert response.status_code == 403
+        data = response.get_json()
+        assert 'error' in data
+        assert 'admin' in data['error'].lower()
+        
+        # Verify admin user is still active
+        with app.app_context():
+            user = User.query.filter_by(user_id=admin_user_id).first()
+            assert user is not None
+            assert user.is_active is True
+            assert user.is_admin is True
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

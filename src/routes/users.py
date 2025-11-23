@@ -318,6 +318,13 @@ def delete_user(user_id):
                 "message": f"No user found with ID: {user_id}"
             }), 404
         
+        # Prevent deletion of admin users
+        if user.is_admin:
+            return jsonify({
+                "error": "Cannot delete admin",
+                "message": "Admin users cannot be deleted"
+            }), 403
+        
         username = user.username
         
         # Hard delete - permanently remove from database
@@ -377,6 +384,13 @@ def deactivate_user(user_id):
                 "error": "User not found",
                 "message": f"No user found with ID: {user_id}"
             }), 404
+        
+        # Prevent deactivation of admin users
+        if user.is_admin:
+            return jsonify({
+                "error": "Cannot deactivate admin",
+                "message": "Admin users cannot be deactivated"
+            }), 403
         
         # Check if already deactivated
         if not user.is_active:

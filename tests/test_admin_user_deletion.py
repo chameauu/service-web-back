@@ -175,8 +175,8 @@ class TestAdminOnlyUserDeletion:
         
         assert response.status_code == 401
     
-    def test_admin_can_delete_self(self, app, client, admin_user):
-        """Test that admin token holder can delete any user"""
+    def test_admin_cannot_delete_admin(self, app, client, admin_user):
+        """Test that admin users cannot be deleted (protection)"""
         admin_token = get_admin_token()
         
         response = client.delete(
@@ -184,7 +184,10 @@ class TestAdminOnlyUserDeletion:
             headers={'Authorization': f'admin {admin_token}'}
         )
         
-        assert response.status_code == 200
+        assert response.status_code == 403
+        data = response.get_json()
+        assert 'error' in data
+        assert 'admin' in data['error'].lower()
     
     def test_delete_user_response_structure(self, app, client, admin_user, target_user):
         """Test the response structure of successful deletion"""
@@ -233,6 +236,26 @@ class TestAdminTokenValidation:
         )
         
         assert response.status_code == 403
+
+    def test_cannot_delete_admin_user(self, app, client, admin_user):
+        """Test that admin users cannot be deleted"""
+        admin_token = os.environ.get('IOTFLOW_ADMIN_TOKEN', 'test_admin_token')
+        
+        response = client.delete(
+            f'/api/v1/users/{admin_user["user_id"]}',
+            headers={'Authorization': f'admin {admin_token}'}
+        )
+        
+        assert response.status_code == 403
+        data = response.get_json()
+        assert 'error' in data
+        assert 'admin' in data['error'].lower()
+        
+        # Verify admin user still exists
+        with app.app_context():
+            user = User.query.filter_by(user_id=admin_user['user_id']).first()
+            assert user is not None
+            assert user.is_admin is True
 
 
 if __name__ == '__main__':
