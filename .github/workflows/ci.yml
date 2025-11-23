@@ -13,7 +13,7 @@ jobs:
     
     strategy:
       matrix:
-        python-version: ['3.10']
+        python-version: ['3.10', '3.11', '3.12']
     
     services:
       postgres:
@@ -72,23 +72,23 @@ jobs:
       run: |
         poetry run pytest tests/ -v
     
-    - name: Run tests with coverage (if available)
-      if: always()
+    - name: Run tests with coverage
       env:
         DATABASE_URL: postgresql://postgres:postgres@localhost:5432/iotflow_test
         IOTFLOW_ADMIN_TOKEN: test_admin_token
         FLASK_ENV: testing
       run: |
-        poetry run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term || echo "Coverage skipped (pytest-cov not installed)"
+        poetry run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term
     
     - name: Upload coverage to Codecov
-      if: always()
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
-        file: ./coverage.xml
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage.xml
         flags: unittests
-        name: codecov-umbrella
+        name: codecov-${{ matrix.python-version }}
         fail_ci_if_error: false
+        verbose: true
 
   lint:
     name: Code Quality
