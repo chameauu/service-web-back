@@ -6,7 +6,6 @@ A production-ready IoT backend platform built with Python Flask for device conne
 ![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-blue)
 ![Flask](https://img.shields.io/badge/Framework-Flask-lightgrey)
 ![Tests](https://img.shields.io/badge/tests-158%20passing-success)
-[![codecov](https://codecov.io/github/chameauu/service-web-back/graph/badge.svg?token=YF3KTFIIU1)](https://codecov.io/github/chameauu/service-web-back) 
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## ✨ Features
@@ -15,7 +14,7 @@ A production-ready IoT backend platform built with Python Flask for device conne
 - **PostgreSQL Storage** - Unified database for devices, users, and time-series telemetry
 - **REST API** - Comprehensive HTTP API with Swagger documentation
 - **Real-time Analytics** - Time-series queries, aggregations, and data visualization
-- **Enterprise Security** - API key auth, JWT tokens, rate limiting, admin protection
+- **Enterprise Security** - API key auth, rate limiting, admin protection
 - **User Management** - Multi-user support with device ownership and access control
 - **Device Groups** - Organize devices into logical groups
 - **Comprehensive Testing** - Full test coverage with 158 passing tests
@@ -97,7 +96,7 @@ poetry run pytest tests/ -v
 
 **User Management**
 - `POST /api/v1/auth/register` - Register user
-- `POST /api/v1/auth/login` - User login (JWT)
+- `POST /api/v1/auth/login` - User login 
 - `GET /api/v1/users/{user_id}` - Get user details
 - `PUT /api/v1/users/{user_id}` - Update user
 - `PATCH /api/v1/users/{user_id}/deactivate` - Deactivate user (admin)
@@ -373,7 +372,7 @@ DATABASE_URL=postgresql://iotflow:iotflowpass@localhost:5432/iotflow
 
 # Security
 IOTFLOW_ADMIN_TOKEN=your-admin-token
-JWT_SECRET_KEY=your-jwt-secret
+
 API_KEY_LENGTH=32
 
 # Logging
@@ -445,7 +444,6 @@ docker compose -f docker-compose.prod.yml up -d
 ## 🔒 Security Features
 
 - **API Key Authentication** - Secure device authentication with 32-character keys
-- **JWT Tokens** - User session management with refresh tokens
 - **Rate Limiting** - Per-device and per-IP request limits
 - **Admin Protection** - Admins cannot be deleted or deactivated
 - **Input Validation** - Request payload sanitization and validation
@@ -526,7 +524,6 @@ open http://localhost:8089
 - Use isort for import sorting
 - Run `make format` before committing
 - Ensure all tests pass with `make test`
-- Maintain test coverage above 80%
 
 ## 🐛 Troubleshooting
 
