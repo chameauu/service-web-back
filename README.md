@@ -2,7 +2,7 @@
 
 A production-ready IoT backend platform built with Python Flask for device connectivity, telemetry data collection, and real-time analytics. Features PostgreSQL storage, comprehensive REST API, and enterprise-grade security.
 
-![Python](https://img.shields.io/badge/Python-3.10%20)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-blue)
 ![Flask](https://img.shields.io/badge/Framework-Flask-lightgrey)
 ![Tests](https://img.shields.io/badge/tests-158%20passing-success)
