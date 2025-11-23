@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "iot-connectivity-layer"
+name = "iotflow backend"
 version = "0.1.0"
-description = "IoT Device Connectivity Layer with Flask and PostgreSQL"
+description = "IoTFlow Backend with Flask and PostgreSQL"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
 packages = [{include = "src"}]
