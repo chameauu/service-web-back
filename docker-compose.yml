@@ -1,6 +1,7 @@
 version: "3.8"
 
 services:
+  # PostgreSQL - Relational data (users, devices, groups)
   postgres:
     image: postgres:15
     container_name: iotflow_postgres
@@ -16,5 +17,128 @@ services:
       test: ["CMD-SHELL", "pg_isready -U iotflow"]  
       interval: 10s
       retries: 5
+    networks:
+      - iotflow-network
+
+  # Cassandra - Time-series telemetry data
+  cassandra:
+    image: cassandra:4.1
+    container_name: iotflow_cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: IoTFlowCluster
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_SEEDS: cassandra
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 100M
+    volumes:
+      - ./instance/cassandra_data:/var/lib/cassandra
+    ports:
+      - "9042:9042"  # CQL
+      - "7000:7000"  # Cluster communication
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - iotflow-network
+
+  # Redis - Caching and real-time data
+  redis:
+    image: redis:7-alpine
+    container_name: iotflow_redis
+    command: redis-server --appendonly yes --requirepass iotflowpass --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ./instance/redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      retries: 5
+    networks:
+      - iotflow-network
+
+  # MongoDB - Flexible document storage (configs, events, alerts)
+  mongodb:
+    image: mongo:7.0
+    container_name: iotflow_mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: iotflow
+      MONGO_INITDB_ROOT_PASSWORD: iotflowpass
+      MONGO_INITDB_DATABASE: iotflow
+    volumes:
+      - ./instance/mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      retries: 5
+    networks:
+      - iotflow-network
+
+  # Optional: Cassandra Web UI for management
+  cassandra-web:
+    image: ipushc/cassandra-web:latest
+    container_name: iotflow_cassandra_web
+    environment:
+      CASSANDRA_HOST: cassandra
+      CASSANDRA_PORT: 9042
+    ports:
+      - "3000:3000"
+    depends_on:
+      - cassandra
+    networks:
+      - iotflow-network
+    profiles:
+      - tools
+
+  # Optional: Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: iotflow_redis_commander
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:iotflowpass
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - iotflow-network
+    profiles:
+      - tools
+
+  # Optional: Mongo Express for MongoDB management
+  mongo-express:
+    image: mongo-express:latest
+    container_name: iotflow_mongo_express
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: iotflow
+      ME_CONFIG_MONGODB_ADMINPASSWORD: iotflowpass
+      ME_CONFIG_MONGODB_URL: mongodb://iotflow:iotflowpass@mongodb:27017/
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    ports:
+      - "8082:8081"
+    depends_on:
+      - mongodb
+    networks:
+      - iotflow-network
+    profiles:
+      - tools
+
+networks:
+  iotflow-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  cassandra_data:
+  redis_data:
+  mongodb_data:
 
 

@@ -1,41 +1,68 @@
 """
-Telemetry routes using PostgreSQL
-Drop-in replacement for telemetry.py with PostgreSQL backend
+Telemetry routes using Cassandra for time-series data
+With Redis caching and MongoDB event logging
 """
 
 from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime, timezone
-from src.services.postgres_telemetry import PostgresTelemetryService
+from src.services.cassandra_telemetry import CassandraTelemetryService
+from src.services.redis_cache import RedisCacheService
+from src.services.mongodb_service import MongoDBService
 from src.models import Device
 
 # Create blueprint for telemetry routes
 telemetry_bp = Blueprint("telemetry", __name__, url_prefix="/api/v1/telemetry")
 
-# Initialize PostgreSQL telemetry service
-postgres_service = PostgresTelemetryService()
+# Initialize services
+cassandra_service = CassandraTelemetryService()
+redis_service = RedisCacheService()
+mongodb_service = MongoDBService()
 
 
-# Helper to get device by API key and check access
+# Helper to get device by API key with Redis caching
 def get_authenticated_device(device_id=None):
     api_key = request.headers.get("X-API-Key")
     if not api_key:
         return None, jsonify({"error": "API key required"}), 401
+    
+    # Try Redis cache first
+    cached_device = redis_service.get_device_by_api_key(api_key)
+    if cached_device:
+        device_id_from_cache = cached_device.get('device_id')
+        if device_id is not None and int(device_id_from_cache) != int(device_id):
+            return None, jsonify({"error": "Forbidden: device mismatch"}), 403
+        
+        # Get full device from database
+        device = Device.query.get(device_id_from_cache)
+        if device:
+            return device, None, None
+    
+    # Cache miss - query database
     device = Device.query.filter_by(api_key=api_key).first()
     if not device:
         return None, jsonify({"error": "Invalid API key"}), 401
+    
+    # Cache the API key mapping
+    redis_service.cache_api_key(api_key, {
+        'device_id': device.id,
+        'user_id': device.user_id,
+        'status': device.status
+    }, ttl=3600)
+    
     if device_id is not None and int(device.id) != int(device_id):
         return None, jsonify({"error": "Forbidden: device mismatch"}), 403
+    
     return device, None, None
 
 
 @telemetry_bp.route("", methods=["POST"])
 def store_telemetry():
-    """Store telemetry data
+    """Store telemetry data in Cassandra
     ---
     tags:
       - Telemetry
     summary: Submit telemetry data
-    description: Submit telemetry data from an IoT device
+    description: Submit telemetry data from an IoT device (stored in Cassandra)
     security:
       - ApiKeyAuth: []
     requestBody:
@@ -45,27 +72,16 @@ def store_telemetry():
           schema:
             type: object
             required:
-              - measurements
+              - data
             properties:
-              measurements:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    name:
-                      type: string
-                      example: temperature
-                    value:
-                      oneOf:
-                        - type: number
-                        - type: string
-                      example: 25.5
-                    unit:
-                      type: string
-                      example: celsius
-                    timestamp:
-                      type: string
-                      format: date-time
+              data:
+                type: object
+                example: {"temperature": 23.5, "humidity": 65.2}
+              metadata:
+                type: object
+              timestamp:
+                type: string
+                format: date-time
     responses:
       201:
         description: Telemetry data stored successfully
@@ -78,13 +94,26 @@ def store_telemetry():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
-        # Get API key from headers
+        # Get API key from headers (with Redis caching)
         api_key = request.headers.get("X-API-Key")
         if not api_key:
             return jsonify({"error": "API key required"}), 401
 
-        # Find device by API key
-        device = Device.query.filter_by(api_key=api_key).first()
+        # Check Redis cache first
+        cached_device = redis_service.get_device_by_api_key(api_key)
+        if cached_device:
+            device = Device.query.get(cached_device['device_id'])
+        else:
+            # Cache miss - query database
+            device = Device.query.filter_by(api_key=api_key).first()
+            if device:
+                # Cache the API key mapping
+                redis_service.cache_api_key(api_key, {
+                    'device_id': device.id,
+                    'user_id': device.user_id,
+                    'status': device.status
+                }, ttl=3600)
+        
         if not device:
             return jsonify({"error": "Invalid API key"}), 401
 
@@ -99,55 +128,63 @@ def store_telemetry():
         timestamp = None
         if timestamp_str:
             try:
-                # Handle different timestamp formats
                 if timestamp_str.endswith("Z"):
                     timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
                 else:
                     timestamp = datetime.fromisoformat(timestamp_str)
             except ValueError:
-                return (
-                    jsonify({"error": "Invalid timestamp format. Use ISO 8601 format."}),
-                    400,
-                )
+                return jsonify({"error": "Invalid timestamp format. Use ISO 8601 format."}), 400
 
-        # Store in PostgreSQL
-        success = postgres_service.write_telemetry_data(
-            device_id=str(device.id),
-            data=telemetry_data,
-            device_type=device.device_type,
-            metadata=metadata,
-            timestamp=timestamp,
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
+
+        # Store in Cassandra (primary storage)
+        cassandra_success = cassandra_service.write_telemetry_with_user(
+            device_id=device.id,
             user_id=device.user_id,
+            data=telemetry_data,
+            timestamp=timestamp
         )
 
-        if success:
-            # Update device last_seen
-            device.update_last_seen()
+        # Update Redis cache with latest values
+        if cassandra_success:
+            redis_service.cache_latest_telemetry(device.id, telemetry_data, ttl=600)
+            redis_service.set_device_online(device.id)
+            redis_service.update_last_seen(device.id)
 
+        # Update device last_seen in PostgreSQL
+        device.update_last_seen()
+
+        # Log event to MongoDB (async, non-blocking)
+        try:
+            mongodb_service.log_event({
+                'event_type': 'telemetry.submitted',
+                'device_id': device.id,
+                'user_id': device.user_id,
+                'timestamp': timestamp,
+                'details': {
+                    'measurements': list(telemetry_data.keys()),
+                    'count': len(telemetry_data)
+                }
+            })
+        except Exception as e:
+            current_app.logger.warning(f"Failed to log event to MongoDB: {e}")
+
+        if cassandra_success:
             current_app.logger.info(f"Telemetry stored for device {device.name} (ID: {device.id})")
 
-            return (
-                jsonify(
-                    {
-                        "message": "Telemetry data stored successfully",
-                        "device_id": device.id,
-                        "device_name": device.name,
-                        "timestamp": (timestamp.isoformat() if timestamp else datetime.now(timezone.utc).isoformat()),
-                        "stored_in_postgres": True
-                    }
-                ),
-                201,
-            )
+            return jsonify({
+                "message": "Telemetry data stored successfully",
+                "device_id": device.id,
+                "device_name": device.name,
+                "timestamp": timestamp.isoformat(),
+                "stored_in_cassandra": True
+            }), 201
         else:
-            return (
-                jsonify(
-                    {
-                        "error": "Failed to store telemetry data",
-                        "message": "PostgreSQL may not be available. Check logs for details.",
-                    }
-                ),
-                500,
-            )
+            return jsonify({
+                "error": "Failed to store telemetry data",
+                "message": "Cassandra may not be available. Check logs for details.",
+            }), 500
 
     except Exception as e:
         current_app.logger.error(f"Error storing telemetry: {str(e)}")
@@ -156,12 +193,12 @@ def store_telemetry():
 
 @telemetry_bp.route("/<int:device_id>", methods=["GET"])
 def get_device_telemetry(device_id):
-    """Get telemetry data for a specific device
+    """Get telemetry data for a specific device from Cassandra
     ---
     tags:
       - Telemetry
     summary: Get device telemetry
-    description: Retrieve telemetry data for a specific device
+    description: Retrieve telemetry data for a specific device from Cassandra
     security:
       - ApiKeyAuth: []
     parameters:
@@ -170,17 +207,12 @@ def get_device_telemetry(device_id):
         required: true
         schema:
           type: integer
-      - name: start
+      - name: start_time
         in: query
         schema:
           type: string
-          format: date-time
-      - name: end
-        in: query
-        schema:
-          type: string
-          format: date-time
-      - name: measurement
+          default: "-1h"
+      - name: end_time
         in: query
         schema:
           type: string
@@ -188,34 +220,30 @@ def get_device_telemetry(device_id):
         in: query
         schema:
           type: integer
-          default: 100
+          default: 1000
     responses:
       200:
-        description: Telemetry data retrieved
+        description: Telemetry data retrieved from Cassandra
     """
     device, err, code = get_authenticated_device(device_id)
     if err:
         return err, code
     try:
-        telemetry_data = postgres_service.get_device_telemetry(
-            device_id=str(device_id),
+        telemetry_data = cassandra_service.get_device_telemetry(
+            device_id=device_id,
             start_time=request.args.get("start_time", "-1h"),
+            end_time=request.args.get("end_time"),
             limit=min(int(request.args.get("limit", 1000)), 10000),
         )
-        return (
-            jsonify(
-                {
-                    "device_id": device_id,
-                    "device_name": device.name,
-                    "device_type": device.device_type,
-                    "start_time": request.args.get("start_time", "-1h"),
-                    "data": telemetry_data,
-                    "count": len(telemetry_data),
-                    "postgres_available": postgres_service.is_available(),
-                }
-            ),
-            200,
-        )
+        return jsonify({
+            "device_id": device_id,
+            "device_name": device.name,
+            "device_type": device.device_type,
+            "start_time": request.args.get("start_time", "-1h"),
+            "data": telemetry_data,
+            "count": len(telemetry_data),
+            "cassandra_available": cassandra_service.is_available(),
+        }), 200
     except Exception as e:
         current_app.logger.error(f"Error getting telemetry: {str(e)}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
@@ -223,12 +251,12 @@ def get_device_telemetry(device_id):
 
 @telemetry_bp.route("/<int:device_id>/latest", methods=["GET"])
 def get_device_latest_telemetry(device_id):
-    """Get the latest telemetry data for a device
+    """Get the latest telemetry data for a device (Redis cache first, then Cassandra)
     ---
     tags:
       - Telemetry
     summary: Get latest telemetry
-    description: Get the most recent telemetry data for a device
+    description: Get the most recent telemetry data for a device (cached in Redis)
     security:
       - ApiKeyAuth: []
     parameters:
@@ -237,10 +265,6 @@ def get_device_latest_telemetry(device_id):
         required: true
         schema:
           type: integer
-      - name: measurement
-        in: query
-        schema:
-          type: string
     responses:
       200:
         description: Latest telemetry data
@@ -249,32 +273,32 @@ def get_device_latest_telemetry(device_id):
     if err:
         return err, code
     try:
-        latest_data = postgres_service.get_device_latest_telemetry(str(device_id))
+        # Try Redis cache first
+        latest_data = redis_service.get_latest_telemetry(device_id)
+        
+        # If not in cache, get from Cassandra
+        if not latest_data:
+            latest_data = cassandra_service.get_latest_telemetry(device_id)
+            
+            # Cache it for next time
+            if latest_data:
+                redis_service.cache_latest_telemetry(device_id, latest_data, ttl=600)
+        
         if latest_data:
-            return (
-                jsonify(
-                    {
-                        "device_id": device_id,
-                        "device_name": device.name,
-                        "device_type": device.device_type,
-                        "latest_data": latest_data,
-                        "postgres_available": postgres_service.is_available(),
-                    }
-                ),
-                200,
-            )
+            return jsonify({
+                "device_id": device_id,
+                "device_name": device.name,
+                "device_type": device.device_type,
+                "latest_data": latest_data,
+                "cassandra_available": cassandra_service.is_available(),
+            }), 200
         else:
-            return (
-                jsonify(
-                    {
-                        "device_id": device_id,
-                        "device_name": device.name,
-                        "message": "No telemetry data found",
-                        "postgres_available": postgres_service.is_available(),
-                    }
-                ),
-                404,
-            )
+            return jsonify({
+                "device_id": device_id,
+                "device_name": device.name,
+                "message": "No telemetry data found",
+                "cassandra_available": cassandra_service.is_available(),
+            }), 404
     except Exception as e:
         current_app.logger.error(f"Error getting latest telemetry: {str(e)}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
