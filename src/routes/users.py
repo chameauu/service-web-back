@@ -8,8 +8,16 @@ from src.middleware.auth import require_admin_token
 from src.middleware.security import security_headers_middleware
 from datetime import datetime, timezone
 
+# Import NoSQL services
+from src.services.redis_cache import RedisCacheService
+from src.services.mongodb_service import MongoDBService
+
 # Create blueprint for user routes
 user_bp = Blueprint("users", __name__, url_prefix="/api/v1/users")
+
+# Initialize NoSQL services
+redis_service = RedisCacheService()
+mongodb_service = MongoDBService()
 
 
 @user_bp.route("/<user_id>", methods=["GET"])
@@ -265,6 +273,20 @@ def update_user(user_id):
         db.session.commit()
         
         current_app.logger.info(f"User updated: {user.username} (ID: {user.user_id})")
+        
+        # Log event to MongoDB
+        try:
+            mongodb_service.log_event({
+                'event_type': 'user.updated',
+                'user_id': user.id,
+                'timestamp': datetime.now(timezone.utc),
+                'details': {
+                    'updated_fields': list(data.keys()),
+                    'username': user.username
+                }
+            })
+        except Exception as e:
+            current_app.logger.warning(f"Failed to log event to MongoDB: {e}")
         
         return jsonify({
             "status": "success",

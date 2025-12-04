@@ -30,6 +30,7 @@ flasgger = "^0.9.7.1"
 cassandra-driver = "^3.29.3"
 redis = "^7.1.0"
 pymongo = "^4.15.5"
+colorama = "^0.4.6"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.2"

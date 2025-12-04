@@ -15,8 +15,16 @@ from src.middleware.security import (
 )
 from datetime import datetime, timezone
 
+# Import NoSQL services
+from src.services.redis_cache import RedisCacheService
+from src.services.mongodb_service import MongoDBService
+
 # Create blueprint for device routes
 device_bp = Blueprint("devices", __name__, url_prefix="/api/v1/devices")
+
+# Initialize NoSQL services
+redis_service = RedisCacheService()
+mongodb_service = MongoDBService()
 
 
 @device_bp.route("/register", methods=["POST"])
@@ -133,6 +141,41 @@ def register_device():
         db.session.commit()
 
         current_app.logger.info(f"New device registered: {device.name} (ID: {device.id}) by user_id: {user_id}")
+
+        # Cache device info in Redis
+        try:
+            redis_service.cache_device_info(device.id, {
+                'device_id': device.id,
+                'name': device.name,
+                'device_type': device.device_type,
+                'status': device.status,
+                'user_id': device.user_id
+            }, ttl=3600)
+            
+            # Cache API key mapping
+            redis_service.cache_api_key(device.api_key, {
+                'device_id': device.id,
+                'user_id': device.user_id,
+                'status': device.status
+            }, ttl=3600)
+        except Exception as e:
+            current_app.logger.warning(f"Failed to cache device in Redis: {e}")
+
+        # Log event to MongoDB
+        try:
+            mongodb_service.log_event({
+                'event_type': 'device.registered',
+                'device_id': device.id,
+                'user_id': device.user_id,
+                'timestamp': datetime.now(timezone.utc),
+                'details': {
+                    'device_name': device.name,
+                    'device_type': device.device_type,
+                    'location': device.location
+                }
+            })
+        except Exception as e:
+            current_app.logger.warning(f"Failed to log event to MongoDB: {e}")
 
         response_data = device.to_dict()
         response_data["api_key"] = device.api_key  # Include API key in registration response
@@ -316,24 +359,27 @@ def get_device_status():
     try:
         device = request.device
 
+        # Try to get cached device info from Redis
+        cached_info = redis_service.get_device_info(device.id)
+        
         # Telemetry count - could be added later if needed
         telemetry_count = 0
 
         response = device.to_dict()
         response["telemetry_count"] = telemetry_count
 
-        # Check device online status from database
-        is_online = False
-        if device.last_seen:
-            # Ensure both datetimes are timezone-aware for comparison
+        # Check device online status from Redis first, then database
+        is_online = redis_service.is_device_online(device.id)
+        if not is_online and device.last_seen:
+            # Fallback to database check
             now = datetime.now(timezone.utc)
             last_seen = device.last_seen
             if last_seen.tzinfo is None:
-                # If last_seen is naive, assume it's UTC
                 last_seen = last_seen.replace(tzinfo=timezone.utc)
             is_online = (now - last_seen).total_seconds() < 300  # 5 minutes
 
         response["is_online"] = is_online
+        response["cached"] = cached_info is not None
 
         return jsonify({"status": "success", "device": response}), 200
 
@@ -383,6 +429,33 @@ def update_device_info():
         db.session.commit()
 
         current_app.logger.info(f"Device configuration updated: {device.name} (ID: {device.id})")
+
+        # Update Redis cache
+        try:
+            redis_service.cache_device_info(device.id, {
+                'device_id': device.id,
+                'name': device.name,
+                'device_type': device.device_type,
+                'status': device.status,
+                'user_id': device.user_id,
+                'location': device.location
+            }, ttl=3600)
+        except Exception as e:
+            current_app.logger.warning(f"Failed to update device cache: {e}")
+
+        # Log event to MongoDB
+        try:
+            mongodb_service.log_event({
+                'event_type': 'device.config_updated',
+                'device_id': device.id,
+                'user_id': device.user_id,
+                'timestamp': datetime.now(timezone.utc),
+                'details': {
+                    'updated_fields': list(data.keys())
+                }
+            })
+        except Exception as e:
+            current_app.logger.warning(f"Failed to log event to MongoDB: {e}")
 
         return (
             jsonify(
